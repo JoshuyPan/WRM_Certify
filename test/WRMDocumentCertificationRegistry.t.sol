@@ -12,27 +12,11 @@ contract WRMDocumentCertificationRegistryTest is Test {
     address private relayer = address(0xB0B);
     address private newRelayer = address(0xD00D);
 
-    bytes32 private docHash = keccak256("doc");
-    bytes32 private docHash2 = keccak256("doc-2");
-    bytes32 private requesterIdHash = keccak256("requester");
-    bytes32 private documentIdHash = keccak256("document");
-    bytes32 private documentIdHash2 = keccak256("document-2");
-
-    string private companyId = "COMPANY-001";
-    string private companyName = "ACME SPA";
-    string private documentName = "Certificato idoneita Rossi";
+    bytes private documentContent = bytes("Contenuto integrale del documento da certificare");
+    bytes private secondDocumentContent = bytes("Secondo documento con contenuto diverso");
 
     event Certified(
-        bytes32 indexed documentHash,
-        bytes32 indexed companyIdHash,
-        bytes32 indexed requesterIdHash,
-        bytes32 documentIdHash,
-        string companyId,
-        string companyName,
-        string documentName,
-        WRMDocumentCertificationRegistry.DocumentType documentType,
-        uint256 certifiedAt,
-        address certifiedBy
+        bytes32 indexed documentHash, uint256 certifiedAt, address indexed certifiedBy, uint256 chainIdAtWrite
     );
 
     function setUp() public {
@@ -42,298 +26,113 @@ contract WRMDocumentCertificationRegistryTest is Test {
     }
 
     function testRelayerCanCertifySuccessfully() public {
-        vm.prank(relayer);
-        registry.certify(
-            docHash,
-            requesterIdHash,
-            documentIdHash,
-            companyId,
-            companyName,
-            documentName,
-            uint8(WRMDocumentCertificationRegistry.DocumentType.MedicalCertificate)
-        );
+        bytes32 expectedHash = keccak256(documentContent);
 
-        assertTrue(registry.isCertified(docHash));
+        vm.prank(relayer);
+        bytes32 documentHash = registry.certify(documentContent);
+
+        assertEq(documentHash, expectedHash);
+        assertTrue(registry.isCertified(expectedHash));
+    }
+
+    function testHashDocumentMatchesCertifyHash() public view {
+        bytes32 expectedHash = keccak256(documentContent);
+
+        assertEq(registry.hashDocument(documentContent), expectedHash);
     }
 
     function testRelayerCanCertifyEmitsEvent() public {
         uint256 ts = 1_700_000_000;
         vm.warp(ts);
-        bytes32 companyIdHash = keccak256(bytes(companyId));
+        bytes32 expectedHash = keccak256(documentContent);
 
         vm.expectEmit(true, true, true, true);
-        emit Certified(
-            docHash,
-            companyIdHash,
-            requesterIdHash,
-            documentIdHash,
-            companyId,
-            companyName,
-            documentName,
-            WRMDocumentCertificationRegistry.DocumentType.MedicalCertificate,
-            ts,
-            relayer
-        );
+        emit Certified(expectedHash, ts, relayer, block.chainid);
 
         vm.prank(relayer);
-        registry.certify(
-            docHash,
-            requesterIdHash,
-            documentIdHash,
-            companyId,
-            companyName,
-            documentName,
-            uint8(WRMDocumentCertificationRegistry.DocumentType.MedicalCertificate)
-        );
+        registry.certify(documentContent);
     }
 
     function testNonRelayerCannotCertify() public {
         vm.expectRevert();
-        registry.certify(
-            docHash,
-            requesterIdHash,
-            documentIdHash,
-            companyId,
-            companyName,
-            documentName,
-            uint8(WRMDocumentCertificationRegistry.DocumentType.MedicalCertificate)
-        );
+        registry.certify(documentContent);
     }
 
-    function testZeroDocumentHashReverts() public {
+    function testEmptyDocumentContentReverts() public {
         vm.prank(relayer);
-        vm.expectRevert(
-            WRMDocumentCertificationRegistry.InvalidDocumentHash.selector
-        );
-        registry.certify(
-            bytes32(0),
-            requesterIdHash,
-            documentIdHash,
-            companyId,
-            companyName,
-            documentName,
-            uint8(WRMDocumentCertificationRegistry.DocumentType.MedicalCertificate)
-        );
+        vm.expectRevert(WRMDocumentCertificationRegistry.EmptyDocumentContent.selector);
+        registry.certify("");
     }
 
-    function testZeroRequesterIdHashReverts() public {
-        vm.prank(relayer);
-        vm.expectRevert(
-            WRMDocumentCertificationRegistry.InvalidRequesterIdHash.selector
-        );
-        registry.certify(
-            docHash,
-            bytes32(0),
-            documentIdHash,
-            companyId,
-            companyName,
-            documentName,
-            uint8(WRMDocumentCertificationRegistry.DocumentType.MedicalCertificate)
-        );
-    }
-
-    function testZeroDocumentIdHashReverts() public {
-        vm.prank(relayer);
-        vm.expectRevert(
-            WRMDocumentCertificationRegistry.InvalidDocumentIdHash.selector
-        );
-        registry.certify(
-            docHash,
-            requesterIdHash,
-            bytes32(0),
-            companyId,
-            companyName,
-            documentName,
-            uint8(WRMDocumentCertificationRegistry.DocumentType.MedicalCertificate)
-        );
-    }
-
-    function testEmptyCompanyIdReverts() public {
-        vm.prank(relayer);
-        vm.expectRevert(WRMDocumentCertificationRegistry.InvalidCompanyId.selector);
-        registry.certify(
-            docHash,
-            requesterIdHash,
-            documentIdHash,
-            "",
-            companyName,
-            documentName,
-            uint8(WRMDocumentCertificationRegistry.DocumentType.MedicalCertificate)
-        );
-    }
-
-    function testEmptyCompanyNameReverts() public {
-        vm.prank(relayer);
-        vm.expectRevert(
-            WRMDocumentCertificationRegistry.InvalidCompanyName.selector
-        );
-        registry.certify(
-            docHash,
-            requesterIdHash,
-            documentIdHash,
-            companyId,
-            "",
-            documentName,
-            uint8(WRMDocumentCertificationRegistry.DocumentType.MedicalCertificate)
-        );
-    }
-
-    function testEmptyDocumentNameReverts() public {
-        vm.prank(relayer);
-        vm.expectRevert(
-            WRMDocumentCertificationRegistry.InvalidDocumentName.selector
-        );
-        registry.certify(
-            docHash,
-            requesterIdHash,
-            documentIdHash,
-            companyId,
-            companyName,
-            "",
-            uint8(WRMDocumentCertificationRegistry.DocumentType.MedicalCertificate)
-        );
-    }
-
-    function testInvalidDocumentTypeReverts() public {
-        vm.prank(relayer);
-        vm.expectRevert(
-            WRMDocumentCertificationRegistry.InvalidDocumentType.selector
-        );
-        registry.certify(
-            docHash,
-            requesterIdHash,
-            documentIdHash,
-            companyId,
-            companyName,
-            documentName,
-            99
-        );
+    function testEmptyDocumentContentHashReverts() public {
+        vm.expectRevert(WRMDocumentCertificationRegistry.EmptyDocumentContent.selector);
+        registry.hashDocument("");
     }
 
     function testDuplicateCertificationReverts() public {
+        bytes32 expectedHash = keccak256(documentContent);
+
         vm.prank(relayer);
-        registry.certify(
-            docHash,
-            requesterIdHash,
-            documentIdHash,
-            companyId,
-            companyName,
-            documentName,
-            uint8(WRMDocumentCertificationRegistry.DocumentType.MedicalCertificate)
-        );
+        registry.certify(documentContent);
 
         vm.prank(relayer);
         vm.expectRevert(
-            abi.encodeWithSelector(
-                WRMDocumentCertificationRegistry.DocumentAlreadyCertified.selector,
-                docHash
-            )
+            abi.encodeWithSelector(WRMDocumentCertificationRegistry.DocumentAlreadyCertified.selector, expectedHash)
         );
-        registry.certify(
-            docHash,
-            requesterIdHash,
-            documentIdHash,
-            companyId,
-            companyName,
-            documentName,
-            uint8(WRMDocumentCertificationRegistry.DocumentType.MedicalCertificate)
-        );
+        registry.certify(documentContent);
     }
 
     function testGetCertificationReturnsExactValues() public {
         uint256 ts = 1_700_000_123;
         vm.warp(ts);
+        bytes32 expectedHash = keccak256(documentContent);
 
         vm.prank(relayer);
-        registry.certify(
-            docHash,
-            requesterIdHash,
-            documentIdHash,
-            companyId,
-            companyName,
-            documentName,
-            uint8(WRMDocumentCertificationRegistry.DocumentType.Training)
-        );
+        registry.certify(documentContent);
 
-        (
-            bool exists,
-            string memory storedCompanyId,
-            string memory storedCompanyName,
-            string memory storedDocumentName,
-            WRMDocumentCertificationRegistry.DocumentType storedDocumentType,
-            bytes32 storedRequesterIdHash,
-            bytes32 storedDocumentIdHash,
-            uint256 certifiedAt,
-            address certifiedBy,
-            uint256 chainIdAtWrite
-        ) = registry.getCertification(docHash);
+        (bool exists, uint256 certifiedAt, address certifiedBy, uint256 chainIdAtWrite) =
+            registry.getCertification(expectedHash);
 
         assertTrue(exists);
-        assertEq(storedCompanyId, companyId);
-        assertEq(storedCompanyName, companyName);
-        assertEq(storedDocumentName, documentName);
-        assertEq(
-            uint8(storedDocumentType),
-            uint8(WRMDocumentCertificationRegistry.DocumentType.Training)
-        );
-        assertEq(storedRequesterIdHash, requesterIdHash);
-        assertEq(storedDocumentIdHash, documentIdHash);
         assertEq(certifiedAt, ts);
         assertEq(certifiedBy, relayer);
         assertEq(chainIdAtWrite, block.chainid);
     }
 
-    function testCompanyCatalogFunctions() public {
-        string memory secondDocName = "Attestato sicurezza";
+    function testGlobalCatalogFunctions() public {
+        bytes32 expectedHash = keccak256(documentContent);
+        bytes32 secondExpectedHash = keccak256(secondDocumentContent);
 
         vm.startPrank(relayer);
-        registry.certify(
-            docHash,
-            requesterIdHash,
-            documentIdHash,
-            companyId,
-            companyName,
-            documentName,
-            uint8(WRMDocumentCertificationRegistry.DocumentType.MedicalCertificate)
-        );
-        registry.certify(
-            docHash2,
-            requesterIdHash,
-            documentIdHash2,
-            companyId,
-            companyName,
-            secondDocName,
-            uint8(WRMDocumentCertificationRegistry.DocumentType.Training)
-        );
+        registry.certify(documentContent);
+        registry.certify(secondDocumentContent);
         vm.stopPrank();
 
-        uint256 total = registry.getCompanyDocumentCount(companyId);
+        uint256 total = registry.getCertificationCount();
         assertEq(total, 2);
 
-        bytes32[] memory hashes = registry.getCompanyDocumentHashes(
-            companyId,
-            0,
-            10
-        );
+        bytes32[] memory hashes = registry.getDocumentHashes(0, 10);
         assertEq(hashes.length, 2);
-        assertEq(hashes[0], docHash);
-        assertEq(hashes[1], docHash2);
+        assertEq(hashes[0], expectedHash);
+        assertEq(hashes[1], secondExpectedHash);
 
-        WRMDocumentCertificationRegistry.CertificationRecord[]
-            memory records = registry.getCompanyCertifications(companyId, 0, 10);
+        WRMDocumentCertificationRegistry.CertificationRecord[] memory records = registry.getCertifications(0, 10);
         assertEq(records.length, 2);
-        assertEq(records[0].documentHash, docHash);
-        assertEq(records[0].companyName, companyName);
-        assertEq(
-            uint8(records[0].documentType),
-            uint8(WRMDocumentCertificationRegistry.DocumentType.MedicalCertificate)
-        );
-        assertEq(records[1].documentHash, docHash2);
-        assertEq(records[1].documentName, secondDocName);
-        assertEq(
-            uint8(records[1].documentType),
-            uint8(WRMDocumentCertificationRegistry.DocumentType.Training)
-        );
+        assertEq(records[0].documentHash, expectedHash);
+        assertEq(records[0].certifiedBy, relayer);
+        assertEq(records[1].documentHash, secondExpectedHash);
+        assertEq(records[1].certifiedBy, relayer);
+    }
+
+    function testCatalogPaginationUsesMaxPageSizeWhenLimitIsZero() public {
+        vm.startPrank(relayer);
+        registry.certify(documentContent);
+        registry.certify(secondDocumentContent);
+        vm.stopPrank();
+
+        bytes32[] memory hashes = registry.getDocumentHashes(0, 0);
+
+        assertEq(hashes.length, 2);
     }
 
     function testAdminCanGrantAndRevokeRelayerRole() public {

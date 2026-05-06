@@ -1,4 +1,4 @@
-# WRMDocumentCertificationRegistry - Backend Integration (Variant)
+# WRMDocumentCertificationRegistry - Backend Integration
 
 ## Contract
 - Name: `WRMDocumentCertificationRegistry`
@@ -6,43 +6,41 @@
 - Solidity: `^0.8.24`
 
 ## Purpose
-Registra certificazioni documentali con:
-- hash tecnici (`documentHash`, `requesterIdHash`, `documentIdHash`)
-- metadati leggibili (`companyId`, `companyName`, `documentName`, `documentType`)
-- catalogazione per azienda (`companyId`) con query `GET` on-chain.
+Certifica documenti ricevendo dal backend il contenuto integrale del file come `bytes`.
 
-## Document Types
-Enum on-chain:
-- `0`: `MedicalCertificate`
-- `1`: `Training`
-- `2`: `Audit`
+Il contratto:
+- calcola `documentHash = keccak256(documentContent)` on-chain
+- registra timestamp, relayer e chain id
+- impedisce una seconda certificazione dello stesso contenuto
+- emette l'evento `Certified`, leggibile dalla receipt della transazione
+
+Nota importante: il valore `return` di una funzione chiamata via transazione non viene esposto nella transaction receipt Ethereum. Per il backend .NET/Nethereum il dato affidabile da salvare e mostrare su Etherscan e' il `documentHash` emesso nell'evento `Certified`.
 
 ## Roles
 - `DEFAULT_ADMIN_ROLE`: gestisce grant/revoke dei relayer.
-- `RELAYER_ROLE`: può chiamare `certify`.
+- `RELAYER_ROLE`: puo' chiamare `certify`.
 
 ## Write Function
 ```solidity
-function certify(
-    bytes32 documentHash,
-    bytes32 requesterIdHash,
-    bytes32 documentIdHash,
-    string calldata companyId,
-    string calldata companyName,
-    string calldata documentName,
-    uint8 documentType
-) external onlyRole(RELAYER_ROLE);
+function certify(bytes calldata documentContent)
+    external
+    onlyRole(RELAYER_ROLE)
+    returns (bytes32 documentHash);
 ```
 
 Validazioni:
-- `documentHash != 0`
-- `requesterIdHash != 0`
-- `documentIdHash != 0`
-- `companyId` non vuoto
-- `companyName` non vuoto
-- `documentName` non vuoto
-- `documentType` in `[0..2]`
-- `documentHash` non già certificato
+- `documentContent.length > 0`
+- `documentHash` non gia' certificato
+
+## Utility Hash Function
+```solidity
+function hashDocument(bytes calldata documentContent)
+    external
+    pure
+    returns (bytes32 documentHash);
+```
+
+Utile per verifiche applicative tramite `eth_call` senza scrivere on-chain.
 
 ## Read Functions
 ```solidity
@@ -55,12 +53,6 @@ function getCertification(bytes32 documentHash)
     view
     returns (
         bool exists,
-        string memory companyId,
-        string memory companyName,
-        string memory documentName,
-        DocumentType documentType,
-        bytes32 requesterIdHash,
-        bytes32 documentIdHash,
         uint256 certifiedAt,
         address certifiedBy,
         uint256 chainIdAtWrite
@@ -68,26 +60,21 @@ function getCertification(bytes32 documentHash)
 ```
 
 ```solidity
-function getCompanyDocumentCount(string calldata companyId)
+function getCertificationCount() external view returns (uint256);
+```
+
+```solidity
+function getDocumentHashes(uint256 offset, uint256 limit)
     external
     view
-    returns (uint256);
+    returns (bytes32[] memory documentHashes);
 ```
 
 ```solidity
-function getCompanyDocumentHashes(
-    string calldata companyId,
-    uint256 offset,
-    uint256 limit
-) external view returns (bytes32[] memory documentHashes);
-```
-
-```solidity
-function getCompanyCertifications(
-    string calldata companyId,
-    uint256 offset,
-    uint256 limit
-) external view returns (CertificationRecord[] memory records);
+function getCertifications(uint256 offset, uint256 limit)
+    external
+    view
+    returns (CertificationRecord[] memory records);
 ```
 
 Note paginazione:
@@ -98,64 +85,28 @@ Note paginazione:
 ## Returned Record Schema
 `CertificationRecord`:
 - `documentHash: bytes32`
-- `companyId: string`
-- `companyName: string`
-- `documentName: string`
-- `documentType: enum (0/1/2)`
-- `requesterIdHash: bytes32`
-- `documentIdHash: bytes32`
-- `certifiedAt: uint256` (unix timestamp)
-- `certifiedBy: address` (relayer WRM)
+- `certifiedAt: uint256` unix timestamp
+- `certifiedBy: address` relayer WRM
 - `chainIdAtWrite: uint256`
 
 ## Event
 ```solidity
 event Certified(
     bytes32 indexed documentHash,
-    bytes32 indexed companyIdHash,
-    bytes32 indexed requesterIdHash,
-    bytes32 documentIdHash,
-    string companyId,
-    string companyName,
-    string documentName,
-    DocumentType documentType,
     uint256 certifiedAt,
-    address certifiedBy
+    address indexed certifiedBy,
+    uint256 chainIdAtWrite
 );
 ```
 
-`companyIdHash = keccak256(bytes(companyId))`.
+Il backend deve decodificare questo evento dalla receipt e salvare:
+- `documentHash`
+- transaction hash della transazione
 
 ## Custom Errors
-- `InvalidDocumentHash()`
-- `InvalidRequesterIdHash()`
-- `InvalidDocumentIdHash()`
-- `InvalidCompanyId()`
-- `InvalidCompanyName()`
-- `InvalidDocumentName()`
-- `InvalidDocumentType()`
+- `EmptyDocumentContent()`
 - `DocumentAlreadyCertified(bytes32 documentHash)`
-- `AccessControlUnauthorizedAccount(address account, bytes32 neededRole)` (OpenZeppelin)
-
-## Selectors / Topic
-Function selectors:
-- `certify(bytes32,bytes32,bytes32,string,string,string,uint8)` -> `0xbeee0efb`
-- `isCertified(bytes32)` -> `0x964c6790`
-- `getCertification(bytes32)` -> `0x1fb25f07`
-- `getCompanyDocumentCount(string)` -> `0x55705ac0`
-- `getCompanyDocumentHashes(string,uint256,uint256)` -> `0xfa565b58`
-- `getCompanyCertifications(string,uint256,uint256)` -> `0xd7829b34`
-
-Event topic0:
-- `Certified(bytes32,bytes32,bytes32,bytes32,string,string,string,uint8,uint256,address)`
-- topic0 value: `0x16678c9402ecbe764c9730942616162c00e91e0a4b9304da6e422ea538df2827`
-
-## Off-chain Hash Rules (Backend)
-- `documentHash = keccak256(file bytes)`
-- `requesterIdHash = keccak256(tenantId + userId + salt)`
-- `documentIdHash = keccak256(documentId + salt)`
-
-Usa regole deterministiche stabili in tutti gli ambienti.
+- `AccessControlUnauthorizedAccount(address account, bytes32 neededRole)` OpenZeppelin
 
 ## Suggested .NET AppSettings
 ```json
@@ -171,15 +122,14 @@ Usa regole deterministiche stabili in tutti gli ambienti.
 ```
 
 ## Backend Flow
-1. Calcola hash input.
-2. `isCertified(documentHash)` opzionale per idempotenza applicativa.
-3. Invia `certify(...)` firmata dal relayer.
-4. Attendi receipt.
-5. Decodifica `Certified`.
-6. Per pagina riepilogo azienda, usa:
-- `getCompanyDocumentCount(companyId)`
-- `getCompanyCertifications(companyId, offset, limit)` in loop paginato.
+1. Leggi lo stream del file in `byte[]`.
+2. Invia `certify(byte[] documentContent)` firmata dal relayer.
+3. Attendi la receipt.
+4. Decodifica l'evento `Certified`.
+5. Salva nel DB aziendale `documentHash` e transaction hash.
+6. Nel frontend crea il link a Etherscan usando la transaction hash.
 
-## Important
-- Se questa variante sostituisce la versione precedente, backend/frontend devono aggiornare ABI e firma `certify`.
-- Le query complete per azienda sono disponibili on-chain ma hanno costo gas/storage maggiore rispetto alla versione hash-only.
+## Security / Cost Notes
+- Il contenuto del file inviato come calldata e' pubblico e visibile a chiunque indicizzi la chain.
+- Inviare file interi on-chain puo' costare molto gas; per file grandi la transazione puo' superare i limiti di block gas.
+- Se i documenti sono riservati, l'approccio piu' sicuro resta calcolare l'hash nel backend e inviare solo `bytes32`.

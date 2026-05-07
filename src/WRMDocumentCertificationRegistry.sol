@@ -1,137 +1,182 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {
+    AccessControlDefaultAdminRules
+} from "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 
-contract WRMDocumentCertificationRegistry is AccessControl {
-    bytes32 public constant RELAYER_ROLE = keccak256("RELAYER_ROLE");
+/// @title WorkforceDocumentRegistry
+/// @notice Registro blockchain per certificare documenti aziendali tramite hash/commitment.
+/// @dev Non salvare mai dati personali o sanitari in chiaro on-chain.
+contract WorkforceDocumentRegistry is AccessControlDefaultAdminRules, Pausable {
+    bytes32 public constant TENANT_MANAGER_ROLE = keccak256("TENANT_MANAGER_ROLE");
+    bytes32 public constant GLOBAL_ISSUER_ROLE = keccak256("GLOBAL_ISSUER_ROLE");
+    bytes32 public constant REVOCATOR_ROLE = keccak256("REVOCATOR_ROLE");
+    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
 
-    error EmptyDocumentContent();
-    error DocumentAlreadyCertified(bytes32 documentHash);
-
-    struct Certification {
-        uint256 certifiedAt;
-        address certifiedBy;
-        uint256 chainIdAtWrite;
+    enum Status {
+        None,
+        Valid,
+        Revoked
     }
 
-    struct CertificationRecord {
-        bytes32 documentHash;
-        uint256 certifiedAt;
-        address certifiedBy;
-        uint256 chainIdAtWrite;
+    struct Certificate {
+        bytes32 tenantIdHash;
+        bytes32 externalRefHash;
+        bytes32 documentCommitment;
+        bytes32 metadataCommitment;
+        address issuer;
+        uint64 issuedAt;
+        uint64 revokedAt;
+        Status status;
     }
 
-    mapping(bytes32 => Certification) private _certifications;
-    mapping(bytes32 => bool) private _exists;
-    bytes32[] private _documentHashes;
+    mapping(bytes32 => Certificate) private _certificates;
 
-    event Certified(
-        bytes32 indexed documentHash, uint256 certifiedAt, address indexed certifiedBy, uint256 chainIdAtWrite
+    /// @dev tenantIdHash => issuer wallet/relayer => allowed
+    mapping(bytes32 => mapping(address => bool)) public tenantIssuers;
+
+    event TenantIssuerSet(bytes32 indexed tenantIdHash, address indexed issuer, bool allowed);
+
+    event CertificateIssued(
+        bytes32 indexed certificateId,
+        bytes32 indexed tenantIdHash,
+        bytes32 indexed documentCommitment,
+        bytes32 externalRefHash,
+        bytes32 metadataCommitment,
+        address issuer,
+        uint64 issuedAt
     );
 
-    constructor(address admin) {
-        _grantRole(DEFAULT_ADMIN_ROLE, admin);
+    event CertificateRevoked(
+        bytes32 indexed certificateId,
+        bytes32 indexed tenantIdHash,
+        bytes32 reasonCommitment,
+        address revoker,
+        uint64 revokedAt
+    );
+
+    error ZeroValue();
+    error UnauthorizedIssuer(bytes32 tenantIdHash, address issuer);
+    error CertificateAlreadyExists(bytes32 certificateId);
+    error CertificateNotFound(bytes32 certificateId);
+    error CertificateNotValid(bytes32 certificateId);
+    error UnauthorizedRevoker(bytes32 certificateId, address caller);
+
+    constructor(address initialAdmin, uint48 defaultAdminDelay)
+        AccessControlDefaultAdminRules(defaultAdminDelay, initialAdmin)
+    {
+        if (initialAdmin == address(0)) revert ZeroValue();
+
+        _grantRole(TENANT_MANAGER_ROLE, initialAdmin);
+        _grantRole(GLOBAL_ISSUER_ROLE, initialAdmin);
+        _grantRole(REVOCATOR_ROLE, initialAdmin);
+        _grantRole(PAUSER_ROLE, initialAdmin);
     }
 
-    function certify(bytes calldata documentContent) external onlyRole(RELAYER_ROLE) returns (bytes32 documentHash) {
-        if (documentContent.length == 0) {
-            revert EmptyDocumentContent();
-        }
-
-        documentHash = _hashDocument(documentContent);
-        if (_exists[documentHash]) {
-            revert DocumentAlreadyCertified(documentHash);
-        }
-
-        _certifications[documentHash] =
-            Certification({certifiedAt: block.timestamp, certifiedBy: msg.sender, chainIdAtWrite: block.chainid});
-        _exists[documentHash] = true;
-        _documentHashes.push(documentHash);
-
-        emit Certified(documentHash, block.timestamp, msg.sender, block.chainid);
-    }
-
-    function hashDocument(bytes calldata documentContent) external pure returns (bytes32 documentHash) {
-        if (documentContent.length == 0) {
-            revert EmptyDocumentContent();
-        }
-
-        return _hashDocument(documentContent);
-    }
-
-    function isCertified(bytes32 documentHash) external view returns (bool) {
-        return _exists[documentHash];
-    }
-
-    function getCertification(bytes32 documentHash)
+    /// @notice Abilita o disabilita un issuer/relayer per uno specifico tenant.
+    /// @dev tenantIdHash deve essere un identificativo opaco, non il nome azienda.
+    function setTenantIssuer(bytes32 tenantIdHash, address issuer, bool allowed)
         external
-        view
-        returns (bool exists, uint256 certifiedAt, address certifiedBy, uint256 chainIdAtWrite)
+        onlyRole(TENANT_MANAGER_ROLE)
     {
-        exists = _exists[documentHash];
-        Certification storage cert = _certifications[documentHash];
-        return (exists, cert.certifiedAt, cert.certifiedBy, cert.chainIdAtWrite);
+        if (tenantIdHash == bytes32(0) || issuer == address(0)) revert ZeroValue();
+
+        tenantIssuers[tenantIdHash][issuer] = allowed;
+
+        emit TenantIssuerSet(tenantIdHash, issuer, allowed);
     }
 
-    function getCertificationCount() external view returns (uint256) {
-        return _documentHashes.length;
+    /// @notice Emette una certificazione documentale.
+    /// @param tenantIdHash Hash opaco del tenant/azienda.
+    /// @param externalRefHash Hash opaco della reference interna, es. UUID pratica/documento.
+    /// @param documentCommitment Commitment del documento, preferibile a un hash raw pubblico.
+    /// @param metadataCommitment Commitment opzionale di metadati off-chain.
+    /// @return certificateId ID deterministico della certificazione.
+    function issueCertificate(
+        bytes32 tenantIdHash,
+        bytes32 externalRefHash,
+        bytes32 documentCommitment,
+        bytes32 metadataCommitment
+    ) external whenNotPaused returns (bytes32 certificateId) {
+        if (tenantIdHash == bytes32(0) || externalRefHash == bytes32(0) || documentCommitment == bytes32(0)) {
+            revert ZeroValue();
+        }
+
+        bool allowed = hasRole(GLOBAL_ISSUER_ROLE, msg.sender) || tenantIssuers[tenantIdHash][msg.sender];
+
+        if (!allowed) {
+            revert UnauthorizedIssuer(tenantIdHash, msg.sender);
+        }
+
+        certificateId = keccak256(abi.encode(block.chainid, address(this), tenantIdHash, externalRefHash));
+
+        if (_certificates[certificateId].status != Status.None) {
+            revert CertificateAlreadyExists(certificateId);
+        }
+
+        uint64 issuedAt = uint64(block.timestamp);
+
+        _certificates[certificateId] = Certificate({
+            tenantIdHash: tenantIdHash,
+            externalRefHash: externalRefHash,
+            documentCommitment: documentCommitment,
+            metadataCommitment: metadataCommitment,
+            issuer: msg.sender,
+            issuedAt: issuedAt,
+            revokedAt: 0,
+            status: Status.Valid
+        });
+
+        emit CertificateIssued(
+            certificateId, tenantIdHash, documentCommitment, externalRefHash, metadataCommitment, msg.sender, issuedAt
+        );
     }
 
-    function getDocumentHashes(uint256 offset, uint256 limit) external view returns (bytes32[] memory documentHashes) {
-        return _paginateDocumentHashes(offset, limit);
+    /// @notice Revoca una certificazione.
+    /// @dev reasonCommitment deve essere un hash/commitment, non una motivazione in chiaro.
+    function revokeCertificate(bytes32 certificateId, bytes32 reasonCommitment) external whenNotPaused {
+        Certificate storage cert = _certificates[certificateId];
+
+        if (cert.status == Status.None) {
+            revert CertificateNotFound(certificateId);
+        }
+
+        if (cert.status != Status.Valid) {
+            revert CertificateNotValid(certificateId);
+        }
+
+        bool allowed = msg.sender == cert.issuer || hasRole(REVOCATOR_ROLE, msg.sender);
+
+        if (!allowed) {
+            revert UnauthorizedRevoker(certificateId, msg.sender);
+        }
+
+        uint64 revokedAt = uint64(block.timestamp);
+
+        cert.status = Status.Revoked;
+        cert.revokedAt = revokedAt;
+
+        emit CertificateRevoked(certificateId, cert.tenantIdHash, reasonCommitment, msg.sender, revokedAt);
     }
 
-    function getCertifications(uint256 offset, uint256 limit)
-        external
-        view
-        returns (CertificationRecord[] memory records)
-    {
-        bytes32[] memory hashes = _paginateDocumentHashes(offset, limit);
-        records = new CertificationRecord[](hashes.length);
+    /// @notice Verifica se un documento corrisponde a una certificazione valida.
+    function verifyCertificate(bytes32 certificateId, bytes32 documentCommitment) external view returns (bool) {
+        Certificate storage cert = _certificates[certificateId];
 
-        for (uint256 i = 0; i < hashes.length; i++) {
-            bytes32 documentHash = hashes[i];
-            Certification storage cert = _certifications[documentHash];
-
-            records[i] = CertificationRecord({
-                documentHash: documentHash,
-                certifiedAt: cert.certifiedAt,
-                certifiedBy: cert.certifiedBy,
-                chainIdAtWrite: cert.chainIdAtWrite
-            });
-        }
+        return cert.status == Status.Valid && cert.documentCommitment == documentCommitment;
     }
 
-    function _paginateDocumentHashes(uint256 offset, uint256 limit)
-        internal
-        view
-        returns (bytes32[] memory documentHashes)
-    {
-        uint256 total = _documentHashes.length;
-        if (offset >= total) {
-            return new bytes32[](0);
-        }
-
-        uint256 boundedLimit = limit;
-
-        uint256 end = offset + boundedLimit;
-        if (end > total) {
-            end = total;
-        }
-
-        uint256 count = end - offset;
-        documentHashes = new bytes32[](count);
-        for (uint256 i = 0; i < count; i++) {
-            documentHashes[i] = _documentHashes[offset + i];
-        }
+    function getCertificate(bytes32 certificateId) external view returns (Certificate memory) {
+        return _certificates[certificateId];
     }
 
-    function _hashDocument(bytes calldata documentContent) internal pure returns (bytes32 documentHash) {
-        assembly ("memory-safe") {
-            let ptr := mload(0x40)
-            calldatacopy(ptr, documentContent.offset, documentContent.length)
-            documentHash := keccak256(ptr, documentContent.length)
-        }
+    function pause() external onlyRole(PAUSER_ROLE) {
+        _pause();
+    }
+
+    function unpause() external onlyRole(PAUSER_ROLE) {
+        _unpause();
     }
 }

@@ -1,111 +1,132 @@
-# WRMDocumentCertificationRegistry - Backend Integration
+# WorkforceDocumentRegistry - Backend Integration
 
 ## Contract
-- Name: `WRMDocumentCertificationRegistry`
+- Name: `WorkforceDocumentRegistry`
 - Source: `src/WRMDocumentCertificationRegistry.sol`
 - Solidity: `^0.8.24`
 
 ## Purpose
-Certifica documenti ricevendo dal backend il contenuto integrale del file come `bytes`.
+Certifica documenti salvando on-chain solo identificativi e commitment opachi.
 
 Il contratto:
-- calcola `documentHash = keccak256(documentContent)` on-chain
-- registra timestamp, relayer e chain id
-- impedisce una seconda certificazione dello stesso contenuto
-- emette l'evento `Certified`, leggibile dalla receipt della transazione
-
-Nota importante: il valore `return` di una funzione chiamata via transazione non viene esposto nella transaction receipt Ethereum. Per il backend .NET/Nethereum il dato affidabile da salvare e mostrare su Etherscan e' il `documentHash` emesso nell'evento `Certified`.
+- registra `tenantIdHash`, `externalRefHash`, `documentCommitment` e `metadataCommitment`
+- calcola un `certificateId` deterministico
+- impedisce duplicati per stessa coppia tenant/reference
+- consente revoca e verifica dello stato
+- non richiede di inviare il contenuto del file in calldata
 
 ## Roles
-- `DEFAULT_ADMIN_ROLE`: gestisce grant/revoke dei relayer.
-- `RELAYER_ROLE`: puo' chiamare `certify`.
+- `DEFAULT_ADMIN_ROLE`: gestisce ruoli amministrativi.
+- `TENANT_MANAGER_ROLE`: abilita o disabilita issuer per tenant.
+- `GLOBAL_ISSUER_ROLE`: puo' emettere certificati per qualsiasi tenant.
+- `REVOCATOR_ROLE`: puo' revocare certificati.
+- `PAUSER_ROLE`: puo' mettere in pausa emissione e revoca.
 
-## Write Function
+## Constructor
 ```solidity
-function certify(bytes calldata documentContent)
+constructor(address initialAdmin, uint48 defaultAdminDelay)
+```
+
+## Issuer Management
+```solidity
+function setTenantIssuer(bytes32 tenantIdHash, address issuer, bool allowed)
     external
-    onlyRole(RELAYER_ROLE)
-    returns (bytes32 documentHash);
+    onlyRole(TENANT_MANAGER_ROLE);
+```
+
+## Write Functions
+```solidity
+function issueCertificate(
+    bytes32 tenantIdHash,
+    bytes32 externalRefHash,
+    bytes32 documentCommitment,
+    bytes32 metadataCommitment
+)
+    external
+    whenNotPaused
+    returns (bytes32 certificateId);
 ```
 
 Validazioni:
-- `documentContent.length > 0`
-- `documentHash` non gia' certificato
+- `tenantIdHash != bytes32(0)`
+- `externalRefHash != bytes32(0)`
+- `documentCommitment != bytes32(0)`
+- chiamante con `GLOBAL_ISSUER_ROLE` o abilitato per il tenant
+- certificato non gia' esistente
 
-## Utility Hash Function
 ```solidity
-function hashDocument(bytes calldata documentContent)
+function revokeCertificate(bytes32 certificateId, bytes32 reasonCommitment)
     external
-    pure
-    returns (bytes32 documentHash);
+    whenNotPaused;
 ```
 
-Utile per verifiche applicative tramite `eth_call` senza scrivere on-chain.
+La revoca e' consentita all'issuer originale o a un account con `REVOCATOR_ROLE`.
 
 ## Read Functions
 ```solidity
-function isCertified(bytes32 documentHash) external view returns (bool);
-```
-
-```solidity
-function getCertification(bytes32 documentHash)
+function verifyCertificate(bytes32 certificateId, bytes32 documentCommitment)
     external
     view
-    returns (
-        bool exists,
-        uint256 certifiedAt,
-        address certifiedBy,
-        uint256 chainIdAtWrite
-    );
+    returns (bool);
 ```
 
 ```solidity
-function getCertificationCount() external view returns (uint256);
-```
-
-```solidity
-function getDocumentHashes(uint256 offset, uint256 limit)
+function getCertificate(bytes32 certificateId)
     external
     view
-    returns (bytes32[] memory documentHashes);
+    returns (Certificate memory);
 ```
-
-```solidity
-function getCertifications(uint256 offset, uint256 limit)
-    external
-    view
-    returns (CertificationRecord[] memory records);
-```
-
-Note paginazione:
-- `MAX_PAGE_SIZE = 100`
-- Se `limit == 0` o `limit > 100`, viene usato `100`.
-- Se `offset >= total`, ritorna array vuoto.
 
 ## Returned Record Schema
-`CertificationRecord`:
-- `documentHash: bytes32`
-- `certifiedAt: uint256` unix timestamp
-- `certifiedBy: address` relayer WRM
-- `chainIdAtWrite: uint256`
+`Certificate`:
+- `tenantIdHash: bytes32`
+- `externalRefHash: bytes32`
+- `documentCommitment: bytes32`
+- `metadataCommitment: bytes32`
+- `issuer: address`
+- `issuedAt: uint64`
+- `revokedAt: uint64`
+- `status: Status`
 
-## Event
+`Status`:
+- `None`
+- `Valid`
+- `Revoked`
+
+## Events
 ```solidity
-event Certified(
-    bytes32 indexed documentHash,
-    uint256 certifiedAt,
-    address indexed certifiedBy,
-    uint256 chainIdAtWrite
+event TenantIssuerSet(bytes32 indexed tenantIdHash, address indexed issuer, bool allowed);
+```
+
+```solidity
+event CertificateIssued(
+    bytes32 indexed certificateId,
+    bytes32 indexed tenantIdHash,
+    bytes32 indexed documentCommitment,
+    bytes32 externalRefHash,
+    bytes32 metadataCommitment,
+    address issuer,
+    uint64 issuedAt
 );
 ```
 
-Il backend deve decodificare questo evento dalla receipt e salvare:
-- `documentHash`
-- transaction hash della transazione
+```solidity
+event CertificateRevoked(
+    bytes32 indexed certificateId,
+    bytes32 indexed tenantIdHash,
+    bytes32 reasonCommitment,
+    address revoker,
+    uint64 revokedAt
+);
+```
 
 ## Custom Errors
-- `EmptyDocumentContent()`
-- `DocumentAlreadyCertified(bytes32 documentHash)`
+- `ZeroValue()`
+- `UnauthorizedIssuer(bytes32 tenantIdHash, address issuer)`
+- `CertificateAlreadyExists(bytes32 certificateId)`
+- `CertificateNotFound(bytes32 certificateId)`
+- `CertificateNotValid(bytes32 certificateId)`
+- `UnauthorizedRevoker(bytes32 certificateId, address caller)`
 - `AccessControlUnauthorizedAccount(address account, bytes32 neededRole)` OpenZeppelin
 
 ## Suggested .NET AppSettings
@@ -116,20 +137,20 @@ Il backend deve decodificare questo evento dalla receipt e salvare:
     "RpcUrl": "https://...",
     "ChainId": 11155111,
     "ContractAddress": "0x...",
-    "RelayerPrivateKey": "..."
+    "IssuerPrivateKey": "..."
   }
 }
 ```
 
 ## Backend Flow
-1. Leggi lo stream del file in `byte[]`.
-2. Invia `certify(byte[] documentContent)` firmata dal relayer.
+1. Calcola off-chain `tenantIdHash`, `externalRefHash`, `documentCommitment` e, se serve, `metadataCommitment`.
+2. Invia `issueCertificate(...)` firmata dall'issuer autorizzato.
 3. Attendi la receipt.
-4. Decodifica l'evento `Certified`.
-5. Salva nel DB aziendale `documentHash` e transaction hash.
+4. Decodifica l'evento `CertificateIssued`.
+5. Salva nel DB aziendale `certificateId`, commitment e transaction hash.
 6. Nel frontend crea il link a Etherscan usando la transaction hash.
 
 ## Security / Cost Notes
-- Il contenuto del file inviato come calldata e' pubblico e visibile a chiunque indicizzi la chain.
-- Inviare file interi on-chain puo' costare molto gas; per file grandi la transazione puo' superare i limiti di block gas.
-- Se i documenti sono riservati, l'approccio piu' sicuro resta calcolare l'hash nel backend e inviare solo `bytes32`.
+- Non inviare dati personali, sanitari o contenuti file in chiaro on-chain.
+- Usare commitment con salt rende piu' difficile correlare documenti prevedibili.
+- `externalRefHash` deve essere opaco e non deve rivelare UUID o riferimenti interni in chiaro.

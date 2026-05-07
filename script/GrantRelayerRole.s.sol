@@ -2,9 +2,11 @@
 pragma solidity ^0.8.24;
 
 import {Script, console2} from "forge-std/Script.sol";
-import {WRMDocumentCertificationRegistry} from "../src/WRMDocumentCertificationRegistry.sol";
+import {WorkforceDocumentRegistry} from "../src/WRMDocumentCertificationRegistry.sol";
 
 contract GrantRelayerRole is Script {
+    bytes32 private constant GLOBAL_ISSUER_ROLE = keccak256("GLOBAL_ISSUER_ROLE");
+
     function run() external {
         uint256 privateKey = vm.envUint("PRIVATE_KEY");
         address contractAddress = vm.envAddress("CONTRACT_ADDRESS");
@@ -14,13 +16,11 @@ contract GrantRelayerRole is Script {
         require(relayer != address(0), "RELAYER_ADDRESS required");
 
         vm.startBroadcast(privateKey);
-        WRMDocumentCertificationRegistry registry = WRMDocumentCertificationRegistry(
-                contractAddress
-            );
-        registry.grantRole(registry.RELAYER_ROLE(), relayer);
+        WorkforceDocumentRegistry registry = WorkforceDocumentRegistry(contractAddress);
+        registry.grantRole(GLOBAL_ISSUER_ROLE, relayer);
         vm.stopBroadcast();
 
-        console2.log("Granted RELAYER_ROLE to", relayer);
+        console2.log("Granted GLOBAL_ISSUER_ROLE to", relayer);
         console2.log("Contract", contractAddress);
         console2.log("Chain ID", block.chainid);
     }

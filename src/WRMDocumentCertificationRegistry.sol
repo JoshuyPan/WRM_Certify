@@ -5,7 +5,6 @@ import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 
 contract WRMDocumentCertificationRegistry is AccessControl {
     bytes32 public constant RELAYER_ROLE = keccak256("RELAYER_ROLE");
-    uint256 public constant MAX_PAGE_SIZE = 100;
 
     error EmptyDocumentContent();
     error DocumentAlreadyCertified(bytes32 documentHash);
@@ -115,9 +114,6 @@ contract WRMDocumentCertificationRegistry is AccessControl {
         }
 
         uint256 boundedLimit = limit;
-        if (boundedLimit == 0 || boundedLimit > MAX_PAGE_SIZE) {
-            boundedLimit = MAX_PAGE_SIZE;
-        }
 
         uint256 end = offset + boundedLimit;
         if (end > total) {

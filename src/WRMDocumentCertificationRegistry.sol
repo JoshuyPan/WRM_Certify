@@ -6,9 +6,7 @@ import {
 } from "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 
-/// @title WorkforceDocumentRegistry
-/// @notice Registro blockchain per certificare documenti aziendali tramite hash/commitment.
-/// @dev Non salvare mai dati personali o sanitari in chiaro on-chain.
+
 contract WorkforceDocumentRegistry is AccessControlDefaultAdminRules, Pausable {
     bytes32 public constant TENANT_MANAGER_ROLE = keccak256("TENANT_MANAGER_ROLE");
     bytes32 public constant GLOBAL_ISSUER_ROLE = keccak256("GLOBAL_ISSUER_ROLE");
@@ -34,7 +32,6 @@ contract WorkforceDocumentRegistry is AccessControlDefaultAdminRules, Pausable {
 
     mapping(bytes32 => Certificate) private _certificates;
 
-    /// @dev tenantIdHash => issuer wallet/relayer => allowed
     mapping(bytes32 => mapping(address => bool)) public tenantIssuers;
 
     event TenantIssuerSet(bytes32 indexed tenantIdHash, address indexed issuer, bool allowed);
@@ -75,8 +72,6 @@ contract WorkforceDocumentRegistry is AccessControlDefaultAdminRules, Pausable {
         _grantRole(PAUSER_ROLE, initialAdmin);
     }
 
-    /// @notice Abilita o disabilita un issuer/relayer per uno specifico tenant.
-    /// @dev tenantIdHash deve essere un identificativo opaco, non il nome azienda.
     function setTenantIssuer(bytes32 tenantIdHash, address issuer, bool allowed)
         external
         onlyRole(TENANT_MANAGER_ROLE)
@@ -88,12 +83,6 @@ contract WorkforceDocumentRegistry is AccessControlDefaultAdminRules, Pausable {
         emit TenantIssuerSet(tenantIdHash, issuer, allowed);
     }
 
-    /// @notice Emette una certificazione documentale.
-    /// @param tenantIdHash Hash opaco del tenant/azienda.
-    /// @param externalRefHash Hash opaco della reference interna, es. UUID pratica/documento.
-    /// @param documentCommitment Commitment del documento, preferibile a un hash raw pubblico.
-    /// @param metadataCommitment Commitment opzionale di metadati off-chain.
-    /// @return certificateId ID deterministico della certificazione.
     function issueCertificate(
         bytes32 tenantIdHash,
         bytes32 externalRefHash,
@@ -134,8 +123,6 @@ contract WorkforceDocumentRegistry is AccessControlDefaultAdminRules, Pausable {
         );
     }
 
-    /// @notice Revoca una certificazione.
-    /// @dev reasonCommitment deve essere un hash/commitment, non una motivazione in chiaro.
     function revokeCertificate(bytes32 certificateId, bytes32 reasonCommitment) external whenNotPaused {
         Certificate storage cert = _certificates[certificateId];
 
@@ -161,7 +148,6 @@ contract WorkforceDocumentRegistry is AccessControlDefaultAdminRules, Pausable {
         emit CertificateRevoked(certificateId, cert.tenantIdHash, reasonCommitment, msg.sender, revokedAt);
     }
 
-    /// @notice Verifica se un documento corrisponde a una certificazione valida.
     function verifyCertificate(bytes32 certificateId, bytes32 documentCommitment) external view returns (bool) {
         Certificate storage cert = _certificates[certificateId];
 

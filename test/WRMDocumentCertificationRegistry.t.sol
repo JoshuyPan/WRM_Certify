@@ -106,6 +106,35 @@ contract WorkforceDocumentRegistryTest is Test {
         vm.stopPrank();
     }
 
+    function testDuplicateDocumentCommitmentRevertsWithDifferentExternalRef() public {
+        vm.startPrank(globalIssuer);
+        bytes32 certificateId =
+            registry.issueCertificate(TENANT_ID_HASH, EXTERNAL_REF_HASH, DOCUMENT_COMMITMENT, METADATA_COMMITMENT);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                WorkforceDocumentRegistry.DocumentAlreadyCertified.selector, DOCUMENT_COMMITMENT, certificateId
+            )
+        );
+        registry.issueCertificate(TENANT_ID_HASH, SECOND_EXTERNAL_REF_HASH, DOCUMENT_COMMITMENT, METADATA_COMMITMENT);
+        vm.stopPrank();
+    }
+
+    function testDocumentCommitmentStaysBlockedAfterRevoke() public {
+        bytes32 certificateId = _issueDefaultCertificate();
+
+        vm.prank(globalIssuer);
+        registry.revokeCertificate(certificateId, REASON_COMMITMENT);
+
+        vm.prank(globalIssuer);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                WorkforceDocumentRegistry.DocumentAlreadyCertified.selector, DOCUMENT_COMMITMENT, certificateId
+            )
+        );
+        registry.issueCertificate(TENANT_ID_HASH, SECOND_EXTERNAL_REF_HASH, DOCUMENT_COMMITMENT, METADATA_COMMITMENT);
+    }
+
     function testGetCertificateReturnsExactValues() public {
         uint64 ts = 1_700_000_123;
         vm.warp(ts);
@@ -124,6 +153,7 @@ contract WorkforceDocumentRegistryTest is Test {
         assertEq(cert.issuedAt, ts);
         assertEq(cert.revokedAt, 0);
         assertEq(uint8(cert.status), uint8(WorkforceDocumentRegistry.Status.Valid));
+        assertEq(registry.getCertificateIdByDocumentCommitment(DOCUMENT_COMMITMENT), certificateId);
     }
 
     function testIssuerCanRevokeOwnCertificate() public {

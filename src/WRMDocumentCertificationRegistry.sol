@@ -6,7 +6,6 @@ import {
 } from "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 
-
 contract WorkforceDocumentRegistry is AccessControlDefaultAdminRules, Pausable {
     bytes32 public constant TENANT_MANAGER_ROLE = keccak256("TENANT_MANAGER_ROLE");
     bytes32 public constant GLOBAL_ISSUER_ROLE = keccak256("GLOBAL_ISSUER_ROLE");
@@ -31,6 +30,7 @@ contract WorkforceDocumentRegistry is AccessControlDefaultAdminRules, Pausable {
     }
 
     mapping(bytes32 => Certificate) private _certificates;
+    mapping(bytes32 => bytes32) private _certificateIdByDocumentCommitment;
 
     mapping(bytes32 => mapping(address => bool)) public tenantIssuers;
 
@@ -57,6 +57,7 @@ contract WorkforceDocumentRegistry is AccessControlDefaultAdminRules, Pausable {
     error ZeroValue();
     error UnauthorizedIssuer(bytes32 tenantIdHash, address issuer);
     error CertificateAlreadyExists(bytes32 certificateId);
+    error DocumentAlreadyCertified(bytes32 documentCommitment, bytes32 certificateId);
     error CertificateNotFound(bytes32 certificateId);
     error CertificateNotValid(bytes32 certificateId);
     error UnauthorizedRevoker(bytes32 certificateId, address caller);
@@ -105,6 +106,11 @@ contract WorkforceDocumentRegistry is AccessControlDefaultAdminRules, Pausable {
             revert CertificateAlreadyExists(certificateId);
         }
 
+        bytes32 existingCertificateId = _certificateIdByDocumentCommitment[documentCommitment];
+        if (existingCertificateId != bytes32(0)) {
+            revert DocumentAlreadyCertified(documentCommitment, existingCertificateId);
+        }
+
         uint64 issuedAt = uint64(block.timestamp);
 
         _certificates[certificateId] = Certificate({
@@ -117,6 +123,7 @@ contract WorkforceDocumentRegistry is AccessControlDefaultAdminRules, Pausable {
             revokedAt: 0,
             status: Status.Valid
         });
+        _certificateIdByDocumentCommitment[documentCommitment] = certificateId;
 
         emit CertificateIssued(
             certificateId, tenantIdHash, documentCommitment, externalRefHash, metadataCommitment, msg.sender, issuedAt
@@ -156,6 +163,10 @@ contract WorkforceDocumentRegistry is AccessControlDefaultAdminRules, Pausable {
 
     function getCertificate(bytes32 certificateId) external view returns (Certificate memory) {
         return _certificates[certificateId];
+    }
+
+    function getCertificateIdByDocumentCommitment(bytes32 documentCommitment) external view returns (bytes32) {
+        return _certificateIdByDocumentCommitment[documentCommitment];
     }
 
     function pause() external onlyRole(PAUSER_ROLE) {

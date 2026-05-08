@@ -12,6 +12,7 @@ Il contratto:
 - registra `tenantIdHash`, `externalRefHash`, `documentCommitment` e `metadataCommitment`
 - calcola un `certificateId` deterministico
 - impedisce duplicati per stessa coppia tenant/reference
+- impedisce duplicati dello stesso `documentCommitment`, anche con reference diverse
 - consente revoca e verifica dello stato
 - non richiede di inviare il contenuto del file in calldata
 
@@ -53,6 +54,7 @@ Validazioni:
 - `documentCommitment != bytes32(0)`
 - chiamante con `GLOBAL_ISSUER_ROLE` o abilitato per il tenant
 - certificato non gia' esistente
+- `documentCommitment` non gia' certificato
 
 ```solidity
 function revokeCertificate(bytes32 certificateId, bytes32 reasonCommitment)
@@ -75,6 +77,13 @@ function getCertificate(bytes32 certificateId)
     external
     view
     returns (Certificate memory);
+```
+
+```solidity
+function getCertificateIdByDocumentCommitment(bytes32 documentCommitment)
+    external
+    view
+    returns (bytes32);
 ```
 
 ## Returned Record Schema
@@ -124,6 +133,7 @@ event CertificateRevoked(
 - `ZeroValue()`
 - `UnauthorizedIssuer(bytes32 tenantIdHash, address issuer)`
 - `CertificateAlreadyExists(bytes32 certificateId)`
+- `DocumentAlreadyCertified(bytes32 documentCommitment, bytes32 certificateId)`
 - `CertificateNotFound(bytes32 certificateId)`
 - `CertificateNotValid(bytes32 certificateId)`
 - `UnauthorizedRevoker(bytes32 certificateId, address caller)`

@@ -31,3 +31,4 @@ CertificateIssued(
 ```
 
 Con Nethereum salva nel DB `certificateId` decodificato dall'evento e la transaction hash della receipt.
+Se `documentCommitment` e' gia' stato certificato, la transazione viene bloccata con `DocumentAlreadyCertified`.
